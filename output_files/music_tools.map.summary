@@ -1,0 +1,17 @@
+Analysis & Synthesis Status : Successful - Wed Nov 28 01:12:40 2018
+Quartus Prime Version : 18.0.0 Build 614 04/24/2018 SJ Lite Edition
+Revision Name : music_tools
+Top-level Entity Name : music_tools
+Family : Cyclone V
+Logic utilization (in ALMs) : N/A
+Total registers : 8344
+Total pins : 97
+Total virtual pins : 0
+Total block memory bits : 3,071,175
+Total DSP Blocks : 35
+Total HSSI RX PCSs : 0
+Total HSSI PMA RX Deserializers : 0
+Total HSSI TX PCSs : 0
+Total HSSI PMA TX Serializers : 0
+Total PLLs : 3
+Total DLLs : 0

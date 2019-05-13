@@ -1,0 +1,144 @@
+`ifndef tuner_v
+`define tuner_v
+
+`define FFT_WIDTH 16'd16384 // number of audio samples that the FFT uses
+`define FFT_WIDTH_LOG_2 4'd15  // log base 2 of the above number
+
+`include "fifo/fifo.v"
+`include "sqrt/sqrt.v"
+`include "tuner_control.v"
+`include "rate_divider.v"
+`include "max.v"
+
+module tuner(
+        input CLOCK_50,
+        input reset,
+        input [9:0] SW,
+
+        input audio_in_available,
+        input [31:0] left_channel_audio_in,
+        input [31:0] right_channel_audio_in,
+        output read_audio_in,
+        
+        output [15:0] frequency
+    );
+
+    wire resetn;
+    wire reset_audio_clk;
+    wire CLOCK_768k;
+    wire CLOCK_48k;
+    wire signed [31:0] data_to_fifo, data_fifo_to_fft;
+    
+    // FIFO signals
+    wire rdempty, wrfull, wrreq, rdreq;
+    
+    // FFT signals
+    wire sink_valid, sink_sop, sink_eop, sink_ready;
+    wire source_valid, source_sop, source_eop;
+    wire [1:0] source_error;
+    wire signed [31:0] source_imag, source_real;
+    wire signed [5:0] source_exp;
+    
+    wire [63:0] real2, imag2, sum;
+    wire [31:0] amplitude;
+
+    assign resetn = ~reset && SW[9];
+    assign read_audio_in = audio_in_available;
+    assign data_to_fifo = left_channel_audio_in;
+    
+    // calculate amplitude
+    assign real2 = source_real*source_real;
+    assign imag2 = source_imag*source_imag;
+    assign sum = real2 + imag2;
+    
+    // Altera has a built-in square root function
+    sqrt sqrt0(.radical(sum), .q(amplitude));
+    
+    // create a 768kHz clock from the 50MHz clock
+    clock_768k clk0(
+        .ref_clk_clk(CLOCK_50),
+        .ref_reset_reset(~resetn),
+        .audio_clk_clk(CLOCK_768k),
+        .reset_source_reset(reset_audio_clk)
+    );
+    // create a 48kHz clock from the 768kHz clock
+    rate_divider_16 divider0(
+        .in_clk(CLOCK_768k), 
+        .resetn(resetn),
+        .out_clk(CLOCK_48k)
+    );
+    
+    fifo_fsm c0(
+        .clk(CLOCK_50),
+        .resetn(resetn),
+        .go(rdempty),  // start when FIFO is empty
+        .wrfull(wrfull),
+        
+        .wrreq(wrreq)
+    );
+
+    // put audio data from input into FIFO
+    fifo fifo0(
+        .data(data_to_fifo),
+        .aclr(~resetn),
+        .rdclk(CLOCK_50),  // read to FFT as fast as possible
+        .rdreq(rdreq),
+        .wrclk(CLOCK_48k),  // write as fast as the audio sample rate allows
+        .wrreq(wrreq),
+        .q(data_fifo_to_fft),
+        .rdempty(rdempty),
+        .wrfull(wrfull)
+    );
+    
+    fft_fsm c1(
+        .clk(CLOCK_50),
+        .resetn(resetn),
+        .go(wrfull),  // start when FIFO is full
+        .sink_ready(sink_ready),
+        .source_valid(source_valid),
+        .rdempty(rdempty),
+        
+        .rdreq(rdreq),
+        .sink_sop(sink_sop),
+        .sink_eop(sink_eop),
+        .sink_valid(sink_valid)
+    );
+
+    // performs FFT on audio data
+    fft fft0(
+        .clk(CLOCK_50),
+        .reset_n(resetn),
+        .inverse(1'b0),
+        
+        .sink_valid(sink_valid),
+        .sink_ready(sink_ready),
+        .sink_sop(sink_sop),
+        .sink_eop(sink_eop),
+        .sink_real(data_fifo_to_fft),
+        .sink_imag(16'b0),     
+        .sink_error(2'b0),
+        
+        .source_valid(source_valid),
+        .source_ready(1'b1),  // we were born ready
+        
+          // don't really care about these outputs
+        .source_error(source_error),
+        .source_sop(source_sop),
+        .source_eop(source_eop),
+        
+        // but we do really really need these
+        .source_real(source_real),
+        .source_imag(source_imag)
+    );
+    
+    // find the frequency with the maximum amplitude from FFT data
+    max #(.FFT_WIDTH(`FFT_WIDTH), .FFT_WIDTH_LOG_2(`FFT_WIDTH_LOG_2)) max_amplitude(
+        .clk(CLOCK_50),
+        .enable(source_valid),
+        .amplitude(amplitude),
+        .frequency(frequency)
+    );
+
+endmodule
+
+`endif

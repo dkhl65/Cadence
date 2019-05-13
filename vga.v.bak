@@ -1,0 +1,445 @@
+`ifndef VGA_V
+`define VGA_V
+`include "frequency_lut.v"
+
+module vga
+    (
+        CLOCK_50,
+        KEY,
+        SW,
+        mode,
+        frequency,
+        redraw,
+        colour,
+        x,
+        y,
+        writeEn,
+        resetn
+    );
+    //standard FPGA inputs
+    input CLOCK_50;
+    input [3:0] KEY;
+    input [9:0] SW;
+    input [1:0] mode;
+    input [15:0] frequency;
+
+    input redraw;
+
+    // Create the colour, x, y and writeEn outputs that are inputs to the controller.
+    output [2:0] colour;
+    output [8:0] x;
+    output [7:0] y;
+    output writeEn;
+    output resetn;
+
+    wire [16:0] address; //counter variable for accessing RAM
+    wire [2:0] draw; //command codes
+
+    assign resetn = KEY[0];
+    assign writeEn = (draw > 0)?1:0;
+
+    addressCounter addrCount(
+            .draw(draw),
+            .mode(mode),
+            .clock(CLOCK_50),
+            .resetn(resetn),
+            .address(address)
+    );
+    controlVGA ctrl(
+            .mode(mode),
+            .clock(CLOCK_50),
+            .resetn(resetn),
+            .redraw(redraw),
+            .SW(SW),
+            .address(address),
+            .draw(draw)
+    );
+
+    datapathVGA data(
+            .draw(draw),
+            .mode(mode),
+            .frequency(frequency),
+            .SW(SW),
+            .clock(CLOCK_50),
+            .resetn(resetn),
+            .address(address),
+            .x(x),
+            .y(y),
+            .colour(colour)
+    );
+endmodule
+
+module addressCounter(draw, mode, clock, resetn, address);
+    input [2:0] draw;
+	input [1:0] mode;
+	input clock, resetn;
+	output reg [16:0] address;
+
+	initial address = 0;
+
+	always@(posedge clock) begin
+		if(!resetn) address <= 0;
+        else if(draw == 3'd1) begin //background
+			if(address < 17'd76799) address <= address + 1;
+        end else if(draw == 3'd2) begin //note
+            if(address < 17'd31) address <= address + 1;
+        end else if(draw == 3'd3) begin //sharp
+            if(address < 17'd48) address <= address + 1;
+        end else address <= 0;
+	end
+endmodule
+
+module controlVGA(mode, clock, resetn, redraw, SW, address, draw);
+    input [1:0] mode;
+    input clock, resetn, redraw;
+    input [9:0] SW;
+    input [16:0] address;
+    output reg [2:0] draw;
+
+    reg [3:0] currentState, nextState; //for FSM
+
+    localparam DONE = 4'd0,
+               BACKGROUND = 4'd1,
+               WAIT1 = 4'd2,
+               NOTE = 4'd3,
+               WAIT2 = 4'd4,
+               SHARP = 4'd5,
+               HOLD1 = 4'd6;
+
+    always@(*) begin
+        case(currentState)
+            DONE: nextState = BACKGROUND;
+            BACKGROUND: begin
+                if(address == 17'd76799) begin
+                    if(mode == 2'b00 && !(SW[3:0] == 4'd0 && SW[7:4] > 4'd2 || SW[3:0] == 4'd8 && SW[7:4] != 4'd3 || SW[7:4] > 4'd11 || SW[3:0] > 4'd8)) //catch illegal note and octave combos
+                        nextState = WAIT1;
+                    else nextState = DONE;
+                end else nextState = BACKGROUND;
+            end
+            WAIT1: nextState = NOTE;
+            NOTE: begin
+                if(address == 17'd31) begin
+                    if(SW[7:4] == 4'd1 || SW[7:4] == 4'd4 || SW[7:4] == 4'd6 || SW[7:4] == 4'd9 || SW[7:4] == 4'd11)
+                        nextState = WAIT2;
+                    else nextState= HOLD1;
+                end else nextState = NOTE;
+            end
+            WAIT2: nextState = SHARP;
+            SHARP: nextState = (address == 17'd48)? HOLD1 : SHARP;
+            HOLD1: nextState = (mode == 2'b00)?HOLD1:BACKGROUND;
+            default: nextState = BACKGROUND;
+        endcase
+    end
+
+    always@(*) begin
+        draw = 3'd0;
+        case(currentState)
+            BACKGROUND: draw = 3'd1;
+            NOTE: draw = 3'd2;
+            SHARP: draw = 3'd3;
+        endcase
+    end
+
+    always@(posedge clock) begin
+        if(!resetn || redraw) currentState <= BACKGROUND;
+        else currentState <= nextState;
+    end
+endmodule
+
+module datapathVGA(draw, mode, frequency, SW, clock, resetn, address, x, y, colour);
+    input [2:0] draw;
+    input [1:0] mode;
+    input [15:0] frequency;
+    input [9:0] SW;
+    input clock, resetn;
+    input [16:0] address;
+    output reg [8:0] x;
+    output reg [7:0] y;
+    output reg [2:0] colour;
+
+    wire [2:0] staffColour, metronomeColour, tunerColour;
+    wire [2:0] C, CHDb, D, DHEb, E, F, FHGb, G, GHAb, A, AHBb, B;
+    wire[2:0] oor, oct0, oct1, oct2, oct3, oct4, oct5, oct6, oct7, oct8;
+    wire [2:0] noteColour, octaveColour;
+    wire [11:0] octaveAddress, noteAddress;
+    wire [11:0] freqOffset;
+    wire positive;
+    wire [8:0] nx, sx;
+    wire [7:0] ny, sy;
+    reg [7:0] noteOffset;
+
+    initial begin
+        x = 0;
+        y = 0;
+    end
+
+    always@(posedge clock) begin
+        if(!resetn) begin //start from beginning
+            x <= 0;
+            y <= 0;
+        end else if(draw == 3'd1) begin //draw pixels one by one
+            if(mode == 2'b00) colour <= staffColour;
+            if(mode == 2'b01) begin
+                if((SW[8:0] >= 9'd320 && x == 9'd318 || SW[8:0] > 0 && x == SW[8:0]-1 || SW[8:0] == 0 && x == 0)
+                    && y >= 8'd96 && y <= 8'd143) colour <= 3'b100;
+                else colour <= metronomeColour;
+            end
+            if(mode == 2'b10) begin
+                if(x >= 9'd79 && x <= 9'd239 && y >= 8'd32 && y <= 8'd55) colour <= octaveColour;
+                else if(x >= 9'd105 && x <= 9'd212 && y >= 8'd178 && y <= 8'd205) colour <= noteColour;
+                else if(y >= 8'd96 && y <= 8'd143 && (positive && x == 9'd159+freqOffset[8:0] || !positive && x == 9'd159-freqOffset[8:0]*9'd2))
+                    colour <= 3'b100;
+                else colour <= tunerColour;
+            end
+            x <= address % 320;
+            y <= address / 320;
+        end else if(draw == 3'd2) begin
+            x <= nx;
+            y <= ny - noteOffset;
+            colour <= 3'b100;
+        end else if(draw == 3'd3) begin
+            x <= sx;
+            y <= sy - noteOffset;
+            colour <= 3'b100;
+        end
+    end
+
+    //set positioning of note marking
+    always@(*) begin
+        noteOffset = 8'd0;
+        if(SW[7:4] >= 4'd0 && SW[7:4] <= 4'd2) noteOffset = noteOffset + {4'b0000, SW[3:0]} * 8'd28;
+        else noteOffset = noteOffset + {4'b0000, SW[3:0]-1'b1} * 8'd28;
+
+        if(SW[7:4] == 4'd2) noteOffset = noteOffset + 8'd4;
+        else if(SW[7:4] == 4'd3 || SW[7:4] == 4'd4) noteOffset = noteOffset + 8'd8;
+        else if(SW[7:4] == 4'd5 || SW[7:4] == 4'd6) noteOffset = noteOffset + 8'd12;
+        else if(SW[7:4] == 4'd7) noteOffset = noteOffset + 8'd16;
+        else if(SW[7:4] == 4'd8 || SW[7:4] == 4'd9) noteOffset = noteOffset + 8'd20;
+        else if(SW[7:4] == 4'd10 || SW[7:4] == 4'd11) noteOffset = noteOffset + 8'd24;
+    end
+
+    //determine note being played
+    frequency_lut lut(oct0, oct1, oct2, oct3, oct4, oct5, oct6, oct7, oct8,
+        C, CHDb, D, DHEb, E, F, FHGb, G, GHAb, A, AHBb, B,
+        frequency,
+
+        octaveColour,
+        noteColour,
+        freqOffset,
+        positive
+    );
+
+    //instantiate RAM
+    staff240 staff(
+            .address(address),
+            .clock(clock),
+            .data(3'b000),
+            .wren(1'b0),
+            .q(staffColour)
+    );
+    metronome240 met(
+            .address(address),
+            .clock(clock),
+            .data(3'b000),
+            .wren(1'b0),
+            .q(metronomeColour)
+    );
+    tuner240 tun(
+            .address(address),
+            .clock(clock),
+            .data(3'b000),
+            .wren(1'b0),
+            .q(tunerColour)
+    );
+
+    noteX nX(
+            .address(address[4:0]),
+            .clock(clock),
+            .data(8'd0),
+            .wren(1'b0),
+            .q(nx)
+    );
+    noteY nY(
+            .address(address[4:0]),
+            .clock(clock),
+            .data(8'd0),
+            .wren(1'b0),
+            .q(ny)
+    );
+    sharpX sX(
+            .address(address[5:0]),
+            .clock(clock),
+            .data(8'd0),
+            .wren(1'b0),
+            .q(sx)
+    );
+    sharpY sY(
+            .address(address[5:0]),
+            .clock(clock),
+            .data(8'd0),
+            .wren(1'b0),
+            .q(sy)
+    );
+
+    assign octaveAddress = {3'd0, x}-12'd79 + ({4'd0, y}-12'd32)*12'd161;
+    octave0 o0(
+            .address(octaveAddress),
+            .clock(clock),
+            .data(8'd0),
+            .wren(1'b0),
+            .q(oct0)
+    );
+    octave1 o1(
+            .address(octaveAddress),
+            .clock(clock),
+            .data(8'd0),
+            .wren(1'b0),
+            .q(oct1)
+    );
+    octave2 o2(
+            .address(octaveAddress),
+            .clock(clock),
+            .data(8'd0),
+            .wren(1'b0),
+            .q(oct2)
+    );
+    octave3 o3(
+            .address(octaveAddress),
+            .clock(clock),
+            .data(8'd0),
+            .wren(1'b0),
+            .q(oct3)
+    );
+    octave4 o4(
+            .address(octaveAddress),
+            .clock(clock),
+            .data(8'd0),
+            .wren(1'b0),
+            .q(oct4)
+    );
+    octave5 o5(
+            .address(octaveAddress),
+            .clock(clock),
+            .data(8'd0),
+            .wren(1'b0),
+            .q(oct5)
+    );
+    octave6 o6(
+            .address(octaveAddress),
+            .clock(clock),
+            .data(8'd0),
+            .wren(1'b0),
+            .q(oct6)
+    );
+    octave7 o7(
+            .address(octaveAddress),
+            .clock(clock),
+            .data(8'd0),
+            .wren(1'b0),
+            .q(oct7)
+    );
+    octave8 o8(
+            .address(octaveAddress),
+            .clock(clock),
+            .data(8'd0),
+            .wren(1'b0),
+            .q(oct8)
+    );
+    outOfRange OOR(
+            .address(octaveAddress),
+            .clock(clock),
+            .data(8'd0),
+            .wren(1'b0),
+            .q(oor)
+    );
+
+    assign noteAddress = {3'd0, x}-12'd105 + ({4'd0, y}-12'd178)*12'd108;
+    noteC nC(
+            .address(noteAddress),
+            .clock(clock),
+            .data(8'd0),
+            .wren(1'b0),
+            .q(C)
+    );
+    noteCHDb nCHDb(
+            .address(noteAddress),
+            .clock(clock),
+            .data(8'd0),
+            .wren(1'b0),
+            .q(CHDb)
+    );
+    noteD nD(
+            .address(noteAddress),
+            .clock(clock),
+            .data(8'd0),
+            .wren(1'b0),
+            .q(D)
+    );
+    noteDHEb nDHEb(
+            .address(noteAddress),
+            .clock(clock),
+            .data(8'd0),
+            .wren(1'b0),
+            .q(DHEb)
+    );
+    noteE nE(
+            .address(noteAddress),
+            .clock(clock),
+            .data(8'd0),
+            .wren(1'b0),
+            .q(E)
+    );
+    noteF nF(
+            .address(noteAddress),
+            .clock(clock),
+            .data(8'd0),
+            .wren(1'b0),
+            .q(F)
+    );
+    noteFHGb nFHGb(
+            .address(noteAddress),
+            .clock(clock),
+            .data(8'd0),
+            .wren(1'b0),
+            .q(FHGb)
+    );
+    noteG nG(
+            .address(noteAddress),
+            .clock(clock),
+            .data(8'd0),
+            .wren(1'b0),
+            .q(G)
+    );
+    noteGHAb nGHAb(
+            .address(noteAddress),
+            .clock(clock),
+            .data(8'd0),
+            .wren(1'b0),
+            .q(GHAb)
+    );
+    noteA nA(
+            .address(noteAddress),
+            .clock(clock),
+            .data(8'd0),
+            .wren(1'b0),
+            .q(A)
+    );
+    noteAHBb nAHBb(
+            .address(noteAddress),
+            .clock(clock),
+            .data(8'd0),
+            .wren(1'b0),
+            .q(AHBb)
+    );
+    noteB nB(
+            .address(noteAddress),
+            .clock(clock),
+            .data(8'd0),
+            .wren(1'b0),
+            .q(B)
+    );
+
+
+endmodule
+
+`endif

@@ -1,1 +1,4 @@
 # Cadence
+This project was done during the last three weeks of the semester with another student. We used GitHub to collaborate but the original repo is private. This repo is a copy of the final product It is implemented on a DE1-SoC board's field programmable gate array (FPGA). It provides three tools for musicians. The tone generator mode plays a solid tone in the the frequency of a selected music note. The metronome makes a tapping noise at intervals specified by the bpm setting. The tuner uses Fast Fourier Transform (FFT) to find the dominant frequency in the microphone input and displays the closest music note to that frequency, as well as the offset from the ideal frequency of the note. Inputs are from the switches and keys on the board, as well as a microphone. The outputs are a speakers, seven segment displays and VGA monitor screen.
+
+For more information, read Music Tools Report.pdf and go to https://danielkhliang.wixsite.com/website/verilog.

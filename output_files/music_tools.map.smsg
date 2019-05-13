@@ -1,0 +1,4 @@
+Info (10281): Verilog HDL Declaration information at vga.v(169): object "nx" differs only in case from object "nX" in the same scope File: E:/University2/ECE241/Project/Cadence/vga.v Line: 169
+Info (10281): Verilog HDL Declaration information at vga.v(170): object "ny" differs only in case from object "nY" in the same scope File: E:/University2/ECE241/Project/Cadence/vga.v Line: 170
+Info (10281): Verilog HDL Declaration information at vga.v(169): object "sx" differs only in case from object "sX" in the same scope File: E:/University2/ECE241/Project/Cadence/vga.v Line: 169
+Info (10281): Verilog HDL Declaration information at vga.v(170): object "sy" differs only in case from object "sY" in the same scope File: E:/University2/ECE241/Project/Cadence/vga.v Line: 170
